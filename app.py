@@ -1,10 +1,15 @@
 from flask import Flask, request, jsonify
 import subprocess
 import os
+import requests
 
 app = Flask(__name__)
 
-# 🔹 الكوكيز الخاصة بـ DeviantArt
+# ✅ معلومات البوت
+TELEGRAM_BOT_TOKEN = "ضع_توكن_البوت_هنا"
+CHAT_ID = "ضع_الشات_ايدي_هنا"
+
+# ✅ كوكيز DeviantArt
 COOKIES = [
     {
         "domain": ".deviantart.com",
@@ -28,6 +33,7 @@ COOKIES = [
     },
 ]
 
+
 def write_cookies_file():
     """يحفظ الكوكيز في ملف بصيغة Netscape المفهومة من gallery-dl"""
     cookies_path = "cookies.txt"
@@ -38,38 +44,55 @@ def write_cookies_file():
     return cookies_path
 
 
+def send_to_telegram(file_path):
+    """يرسل الصورة إلى تيليجرام"""
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+    with open(file_path, "rb") as f:
+        files = {"photo": f}
+        data = {"chat_id": CHAT_ID}
+        requests.post(url, data=data, files=files)
+
+
 @app.route('/')
 def index():
-    return jsonify({
-        "status": "running",
-        "message": "Gallery-DL API with cookies is live 🚀"
-    })
+    return jsonify({"status": "running"})
 
 
 @app.route('/download', methods=['POST'])
 def download():
     data = request.get_json()
-    url = data.get('url')
+    url = data.get("url")
 
     if not url:
         return jsonify({"error": "Missing URL"}), 400
 
-    # كتابة ملف الكوكيز قبل التحميل
     cookies_file = write_cookies_file()
+    output_folder = "downloads"
+    os.makedirs(output_folder, exist_ok=True)
 
     try:
         subprocess.run([
             "gallery-dl",
             "--cookies", cookies_file,
-            "-d", "downloads",
+            "-d", output_folder,
             url
         ], check=True)
 
-        return jsonify({"status": "success", "url": url})
+        # 🔹 إرسال الصور بعد التحميل
+        sent_count = 0
+        for root, _, files in os.walk(output_folder):
+            for file in files:
+                if file.lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")):
+                    file_path = os.path.join(root, file)
+                    send_to_telegram(file_path)
+                    sent_count += 1
+
+        return jsonify({"status": "done", "sent": sent_count})
+
     except subprocess.CalledProcessError:
         return jsonify({"status": "failed"}), 500
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host="0.0.0.0", port=port)
