@@ -1,18 +1,50 @@
 from flask import Flask, request, jsonify
 import subprocess
 import os
-import glob
-import requests
 
 app = Flask(__name__)
 
-# ✨ غيّري هذه القيم إلى معلوماتك ✨
-BOT_TOKEN = "8183373964:AAF3mXql_cmVYdkWSxclE6HkU0xE2wyxy4U"
-CHAT_ID = "290202880"
+# 🔹 الكوكيز الخاصة بـ DeviantArt
+COOKIES = [
+    {
+        "domain": ".deviantart.com",
+        "name": "damztoken",
+        "value": "1"
+    },
+    {
+        "domain": ".deviantart.com",
+        "name": "auth",
+        "value": "__c26b59ce699d1c5e04db%3B%22423ac7cd48ed3d89ad4b99d9f5c65ba4%22"
+    },
+    {
+        "domain": ".deviantart.com",
+        "name": "userinfo",
+        "value": "__8a3904d0ed9bd6b0ee82%3B%7B%22username%22%3A%22noroameel%22%2C%22uniqueid%22%3A%22d23ffeee69f0550070ae6a075879758f%22%2C%22dvs9-1%22%3A1%2C%22ab%22%3A%22tao-NN5-1-a-4%7Ctao-fg0-1-b-6%7Ctao-DZ6-1-d-7%7Ctao-fu0-1-b-1%7Ctao-ad3-1-b-7%7Ctao-ltc-1-b-2%22%7D"
+    },
+    {
+        "domain": ".deviantart.com",
+        "name": "auth_secure",
+        "value": "__85096a90c64fca1e2c7d%3B%22607ad673222472a10d42fa74f6b8ecb6%22"
+    },
+]
+
+def write_cookies_file():
+    """يحفظ الكوكيز في ملف بصيغة Netscape المفهومة من gallery-dl"""
+    cookies_path = "cookies.txt"
+    with open(cookies_path, "w", encoding="utf-8") as f:
+        f.write("# Netscape HTTP Cookie File\n")
+        for c in COOKIES:
+            f.write(f"{c['domain']}\tTRUE\t/\tFALSE\t0\t{c['name']}\t{c['value']}\n")
+    return cookies_path
+
 
 @app.route('/')
 def index():
-    return jsonify({"status": "running", "message": "Gallery-DL API is live 🚀"})
+    return jsonify({
+        "status": "running",
+        "message": "Gallery-DL API with cookies is live 🚀"
+    })
+
 
 @app.route('/download', methods=['POST'])
 def download():
@@ -22,47 +54,20 @@ def download():
     if not url:
         return jsonify({"error": "Missing URL"}), 400
 
-    os.makedirs("downloads", exist_ok=True)
+    # كتابة ملف الكوكيز قبل التحميل
+    cookies_file = write_cookies_file()
 
     try:
-        # تشغيل gallery-dl وحفظ الملفات
-        result = subprocess.run(
-            ["gallery-dl", "-d", "downloads", url],
-            capture_output=True, text=True
-        )
+        subprocess.run([
+            "gallery-dl",
+            "--cookies", cookies_file,
+            "-d", "downloads",
+            url
+        ], check=True)
 
-        if result.returncode != 0:
-            return jsonify({"status": "failed", "error": result.stderr}), 500
-
-        # إيجاد أحدث الملفات
-        files = sorted(
-            glob.glob("downloads/**/*.*", recursive=True),
-            key=os.path.getmtime,
-            reverse=True
-        )
-
-        if not files:
-            return jsonify({"status": "failed", "error": "No files downloaded"}), 500
-
-        # إرسال أول 5 صور فقط حتى لا يطول الإرسال
-        sent_files = []
-        for img_path in files[:5]:
-            with open(img_path, "rb") as f:
-                resp = requests.post(
-                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
-                    data={"chat_id": CHAT_ID},
-                    files={"photo": f}
-                )
-            if resp.status_code == 200:
-                sent_files.append(os.path.basename(img_path))
-
-        if not sent_files:
-            return jsonify({"status": "failed", "error": "No images sent"}), 500
-
-        return jsonify({"status": "success", "sent": sent_files})
-
-    except Exception as e:
-        return jsonify({"status": "failed", "error": str(e)}), 500
+        return jsonify({"status": "success", "url": url})
+    except subprocess.CalledProcessError:
+        return jsonify({"status": "failed"}), 500
 
 
 if __name__ == '__main__':
