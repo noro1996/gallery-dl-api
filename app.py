@@ -6,8 +6,8 @@ import requests
 app = Flask(__name__)
 
 # ✅ معلومات البوت
-TELEGRAM_BOT_TOKEN = "ضع_توكن_البوت_هنا"
-CHAT_ID = "ضع_الشات_ايدي_هنا"
+TELEGRAM_BOT_TOKEN = "8183373964:AAF3mXql_cmVYdkWSxclE6HkU0xE2wyxy4U"
+CHAT_ID = "290202880"
 
 # ✅ كوكيز DeviantArt
 COOKIES = [
