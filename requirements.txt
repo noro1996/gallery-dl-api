@@ -1,2 +1,3 @@
 flask
 gallery-dl
+requests
