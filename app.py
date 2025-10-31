@@ -1,202 +1,105 @@
-# app.py
 from flask import Flask, request, jsonify
-import os, subprocess, json, time, glob
+import subprocess
+import os
 import requests
-from pathlib import Path
+import glob
+import json
+import time
+import tempfile
 
 app = Flask(__name__)
 
-# ----- إعدادات من متغيرات البيئة -----
-BOT_TOKEN = os.environ.get("8183373964:AAF3mXql_cmVYdkWSxclE6HkU0xE2wyxy4U")        # ضع توكن البوت في Secrets / Env
-CHAT_ID = os.environ.get("290202880")            # ضع Chat ID في Secrets / Env
-DELETE_AFTER_SEND = os.environ.get("DELETE_AFTER_SEND", "true").lower() in ("1","true","yes")
+# إعدادات التيليجرام
+BOT_TOKEN = "8183373964:AAF3mXql_cmVYdkWSxclE6HkU0xE2wyxy4U"
+CHAT_ID = "290202880"
 
-# محتوى الكوكيز: إما من متغيرات البيئة أو من ملفات موجودة في الريبو
-COOKIES_TWITTER_ENV = os.environ.get("COOKIES_TWITTER")          # محتوى ملف netscape كَسلسلة نصية
-COOKIES_DEVIANTART_ENV = os.environ.get("COOKIES_DEVIANTART")
+# الكوكيز المدمجة (من JSON الذي أرسلته)
+COOKIES = [
+    {"domain": ".deviantart.com", "name": "damztoken", "value": "1"},
+    {"domain": ".deviantart.com", "name": "auth", "value": "__c26b59ce699d1c5e04db%3B%22423ac7cd48ed3d89ad4b99d9f5c65ba4%22"},
+    {"domain": ".deviantart.com", "name": "userinfo", "value": "__8a3904d0ed9bd6b0ee82%3B%7B%22username%22%3A%22noroameel%22%2C%22uniqueid%22%3A%22d23ffeee69f0550070ae6a075879758f%22%2C%22dvs9-1%22%3A1%2C%22ab%22%3A%22tao-NN5-1-a-4%7Ctao-fg0-1-b-6%7Ctao-DZ6-1-d-7%7Ctao-fu0-1-b-1%7Ctao-ad3-1-b-7%7Ctao-ltc-1-b-2%22%7D"},
+    {"domain": ".www.deviantart.com", "name": "__stripe_mid", "value": "6111769f-b320-4dd3-a506-2b9c2061c74eacf485"},
+    {"domain": ".deviantart.com", "name": "auth_secure", "value": "__85096a90c64fca1e2c7d%3B%22607ad673222472a10d42fa74f6b8ecb6%22"},
+    {"domain": "www.deviantart.com", "name": "g_state", "value": "{\"i_l\":0,\"i_ll\":1761698788592}"},
+    {"domain": ".deviantart.com", "name": "td", "value": "0:1785%3B2:1593%3B3:1125%3B6:1349x679%3B7:1753%3B10:1125%3B11:536%3B12:1905x953%3B13:1833%3B27:820%3B28:820%3B31:1125%3B34:274%3B42:226%3B49:428%3B58:308"}
+]
 
-# أسماء الملفات المستخدمة محلياً
-COOKIES_TWITTER_FILE = "cookies-twitter.txt"
-COOKIES_DEVIANTART_FILE = "cookies-deviantart.txt"
-GDL_CONF_FILE = "gallery-dl.conf"
 
-# مجلد التنزيل
-OUTPUT_DIR = "downloads"
-
-# ----- وظائف مساعدة -----
-def ensure_cookies_files():
-    """
-    يكتب ملفات الكوكيز من متغيرات البيئة إذا لم تكن موجودة.
-    إذا لم تتوفر متغيرات البيئة لكن توجد الملفات في الريبو، نتركها كما هي.
-    """
-    # تويتر
-    if COOKIES_TWITTER_ENV:
-        with open(COOKIES_TWITTER_FILE, "w", encoding="utf-8") as f:
-            f.write(COOKIES_TWITTER_ENV)
-        print(f"[setup] wrote {COOKIES_TWITTER_FILE} from env")
-    else:
-        if Path(COOKIES_TWITTER_FILE).exists():
-            print(f"[setup] {COOKIES_TWITTER_FILE} exists in repo — using it")
-        else:
-            print(f"[setup] warning: {COOKIES_TWITTER_FILE} not found and COOKIES_TWITTER env missing")
-
-    # ديفاينت آرت
-    if COOKIES_DEVIANTART_ENV:
-        with open(COOKIES_DEVIANTART_FILE, "w", encoding="utf-8") as f:
-            f.write(COOKIES_DEVIANTART_ENV)
-        print(f"[setup] wrote {COOKIES_DEVIANTART_FILE} from env")
-    else:
-        if Path(COOKIES_DEVIANTART_FILE).exists():
-            print(f"[setup] {COOKIES_DEVIANTART_FILE} exists in repo — using it")
-        else:
-            print(f"[setup] warning: {COOKIES_DEVIANTART_FILE} not found and COOKIES_DEVIANTART env missing")
-
-def write_gallery_dl_conf():
-    """
-    يكتب ملف gallery-dl.conf بسيط يُخبر gallery-dl أي ملف كوكيز يستعمل لكل موقع.
-    """
-    conf = {
-        "extractor": {
-            "base-directory": OUTPUT_DIR,
-            "twitter": {"cookies": COOKIES_TWITTER_FILE},
-            "deviantart": {"cookies": COOKIES_DEVIANTART_FILE}
-        }
-    }
-    with open(GDL_CONF_FILE, "w", encoding="utf-8") as f:
-        json.dump(conf, f, indent=2)
-    print(f"[setup] wrote {GDL_CONF_FILE}")
-
-def list_files_recursive(folder):
-    p = Path(folder)
-    if not p.exists():
-        return []
-    return [str(x) for x in p.rglob('*') if x.is_file()]
-
-def send_media_group(bot_token, chat_id, file_paths, timeout=120):
-    """
-    يرسل دفعة صور (1..10) عبر sendMediaGroup.
-    file_paths: قائمة مسارات كاملة للصور (<=10)
-    """
-    assert 1 <= len(file_paths) <= 10
-    media = []
-    files = {}
-    for p in file_paths:
-        name = os.path.basename(p)
-        media.append({"type": "photo", "media": f"attach://{name}"})
-        files[name] = open(p, "rb")
-
-    payload = {"chat_id": chat_id, "media": json.dumps(media)}
-    url = f"https://api.telegram.org/bot{bot_token}/sendMediaGroup"
-    try:
-        resp = requests.post(url, data=payload, files=files, timeout=timeout)
-        for fh in files.values():
-            fh.close()
-        if resp.status_code != 200:
-            return False, resp.status_code, resp.text
-        return True, resp.status_code, resp.json()
-    except Exception as e:
-        for fh in files.values():
-            try:
-                fh.close()
-            except:
-                pass
-        return False, None, str(e)
-
-# ----- تهيئة الملفات عند بدء التشغيل -----
-ensure_cookies_files()
-write_gallery_dl_conf()
-Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
-
-if not BOT_TOKEN or not CHAT_ID:
-    print("[warning] BOT_TOKEN or CHAT_ID not set in environment! Set them in Render/GitHub Secrets before deploying.")
-
-# ----- Routes -----
-@app.route("/", methods=["GET"])
+@app.route('/')
 def index():
-    return jsonify({"status": "running", "message": "gallery-dl + cookies + telegram (batched)"})
-
-
-@app.route("/download", methods=["POST"])
-def download():
-    """
-    تتوقع JSON body: { "url": "..." }
-    ستقوم بتحميل الرابط عبر gallery-dl ثم إرسال الصور الجديدة فقط إلى تيليجرام بدفعات 10.
-    """
-    data = request.get_json(force=True, silent=True)
-    if not data:
-        return jsonify({"error":"missing json body"}), 400
-    url = data.get("url")
-    if not url:
-        return jsonify({"error":"missing url in body"}), 400
-
-    # سجل الملفات قبل التحميل
-    before = set(list_files_recursive(OUTPUT_DIR))
-
-    # شغّل gallery-dl : لن نمرر --cookies لأننا اعتمدنا gallery-dl.conf
-    try:
-        proc = subprocess.run(["gallery-dl", "-d", OUTPUT_DIR, url],
-                              capture_output=True, text=True, timeout=600)
-    except subprocess.TimeoutExpired as e:
-        return jsonify({"status":"failed","error":"gallery-dl timeout","detail":str(e)}), 500
-    except FileNotFoundError:
-        return jsonify({"status":"failed","error":"gallery-dl not found. install gallery-dl in the runtime."}), 500
-
-    if proc.returncode != 0:
-        # إرجاع stdout/stderr لمساعدتك في تحليل المشكلة (مثل AuthRequired)
-        return jsonify({
-            "status":"failed",
-            "error":"gallery-dl returned non-zero",
-            "stdout": proc.stdout,
-            "stderr": proc.stderr
-        }), 500
-
-    # جمع الملفات الجديدة فقط
-    after = set(list_files_recursive(OUTPUT_DIR))
-    new_files = sorted(list(after - before))
-
-    # ترشيح الصور
-    images = [p for p in new_files if p.lower().endswith((".jpg",".jpeg",".png",".webp",".gif"))]
-    # ترتيب حسب تاريخ التعديل (قد يساعد في إرسال الصور بترتيب)
-    images.sort(key=lambda p: os.path.getmtime(p))
-
-    if not images:
-        return jsonify({"status":"no_images", "count": 0, "stdout": proc.stdout}), 200
-
-    # إرسال بالدفعات (10 صور)
-    total_sent = 0
-    errors = []
-    for i in range(0, len(images), 10):
-        batch = images[i:i+10]
-        ok, code, resp = send_media_group(BOT_TOKEN, CHAT_ID, batch)
-        if not ok:
-            errors.append({
-                "batch": [os.path.basename(x) for x in batch],
-                "http_code": code,
-                "error": resp
-            })
-        else:
-            total_sent += len(batch)
-        # تأخير بسيط بين الدفعات لتقليل throttle
-        time.sleep(1.5)
-
-    # حذف الصور بعد الإرسال (اختياري)
-    if DELETE_AFTER_SEND:
-        for p in images:
-            try:
-                os.remove(p)
-            except Exception:
-                pass
-
     return jsonify({
-        "status":"done",
-        "total_found": len(new_files),
-        "images_sent": total_sent,
-        "errors": errors,
-        "gallery_dl_stdout": proc.stdout
-    }), 200
+        "status": "running",
+        "message": "Gallery-DL Telegram API is live 🚀"
+    })
 
-# ----- تشغيل التطبيق -----
-if __name__ == "__main__":
+
+@app.route('/download', methods=['POST'])
+def download():
+    data = request.get_json()
+    url = data.get('url')
+
+    if not url:
+        return jsonify({"error": "Missing URL"}), 400
+
+    output_dir = "downloads"
+    os.makedirs(output_dir, exist_ok=True)
+
+    try:
+        # إنشاء ملف كوكيز مؤقت
+        with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
+            for c in COOKIES:
+                line = f"{c['domain']}\tTRUE\t/\tFALSE\t0\t{c['name']}\t{c['value']}\n"
+                f.write(line)
+            cookie_path = f.name
+
+        # تحميل باستخدام gallery-dl مع الكوكيز
+        subprocess.run(
+            ["gallery-dl", "--cookies", cookie_path, "-d", output_dir, url],
+            check=True
+        )
+
+        # جمع الصور
+        images = []
+        for ext in ["jpg", "jpeg", "png", "webp", "gif"]:
+            images.extend(glob.glob(f"{output_dir}/**/*.{ext}", recursive=True))
+
+        if not images:
+            return jsonify({"status": "failed", "error": "no images found"}), 500
+
+        # إرسال الصور إلى التيليجرام على دفعات من 10
+        for i in range(0, len(images), 10):
+            batch = images[i:i + 10]
+            media = [{"type": "photo", "media": f"attach://{os.path.basename(img)}"} for img in batch]
+            files = {os.path.basename(img): open(img, "rb") for img in batch}
+
+            payload = {
+                "chat_id": CHAT_ID,
+                "media": json.dumps(media)
+            }
+
+            r = requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMediaGroup",
+                data=payload,
+                files=files
+            )
+
+            for f in files.values():
+                f.close()
+
+            time.sleep(2)
+
+        # حذف الصور بعد الإرسال
+        for img in images:
+            os.remove(img)
+
+        return jsonify({"status": "success", "count": len(images)})
+
+    except subprocess.CalledProcessError:
+        return jsonify({"status": "failed", "error": "gallery-dl error"}), 500
+    except Exception as e:
+        return jsonify({"status": "failed", "error": str(e)}), 500
+
+
+if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
-    # on Render the web service binds to $PORT
-    app.run(host="0.0.0.0", port=port)
+    app.run(host='0.0.0.0', port=port)
